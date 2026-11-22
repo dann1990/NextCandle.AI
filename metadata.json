@@ -1,0 +1,6 @@
+{
+  "name": "Zenus AI - Terminal Multiagente de Análise Gráfica",
+  "description": "Terminal quantitativo e preditivo de análise de gráficos financeiros com arquitetura multiagente de 5 especialistas, visão computacional e consenso mínimo de 80%.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

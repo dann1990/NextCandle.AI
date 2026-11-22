@@ -1,0 +1,72 @@
+{
+  "version": "v2.7-AI",
+  "updatedAt": 1795293676895,
+  "updatedBy": "ai_adaptive",
+  "marketRegimeSummary": "O regime atual em novembro de 2026 apresenta alta volatilidade decorrente de incertezas macroeconômicas globais, exigindo maior rigor no filtro de S/R e foco em convergência técnica.",
+  "openMarketIndicators": [
+    "EMA 20/50/200",
+    "RSI (14) + Divergência",
+    "ATR (14)",
+    "Estrutura S/R Institucional",
+    "VWAP Sessão"
+  ],
+  "otcIndicators": [
+    "Price Action Puro (Rejeição/Engolfo)",
+    "Taxas Redondas S/R",
+    "Bollinger (20,2) Exaustão",
+    "Simetria de Micro-Ondas"
+  ],
+  "agents": [
+    {
+      "id": "price_action",
+      "openMarketFocus": "Focar em rompimentos de falsos fundos/topos em níveis institucionais com confirmação de volume.",
+      "otcFocus": "Priorizar zonas de exaustão em topos e fundos duplos respeitando a simetria de candles.",
+      "prioritizedIndicators": [
+        "Price Action Puro",
+        "S/R Institucional"
+      ],
+      "weight": 1.05
+    },
+    {
+      "id": "indicators",
+      "openMarketFocus": "Utilizar cruzamento de EMAs como filtro de tendência primária para trades a favor do fluxo.",
+      "otcFocus": "Utilizar bandas de Bollinger para identificar sobrecompra/sobrevenda em zonas de reversão.",
+      "prioritizedIndicators": [
+        "EMA 20/50",
+        "Bollinger (20,2)"
+      ],
+      "weight": 0.95
+    },
+    {
+      "id": "flow_volatility",
+      "openMarketFocus": "Monitorar expansão do ATR para evitar entradas em períodos de consolidação de baixa liquidez.",
+      "otcFocus": "Monitorar a força das velas anteriores (momentum) antes de buscar a exaustão.",
+      "prioritizedIndicators": [
+        "ATR (14)",
+        "Volume Delta"
+      ],
+      "weight": 1
+    },
+    {
+      "id": "predictive_ml",
+      "openMarketFocus": "Análise preditiva baseada na persistência de tendências de curto prazo.",
+      "otcFocus": "Detecção de padrões de reversão baseados em modelos de simetria de preços curtos.",
+      "prioritizedIndicators": [
+        "Simetria de Micro-Ondas",
+        "Regime Volatilidade"
+      ],
+      "weight": 0.95
+    },
+    {
+      "id": "confluence_risk",
+      "openMarketFocus": "Exigir 4/5 votos, calendário ±15m limpo e espaço R:R >= 1:1.5 antes de S/R.",
+      "otcFocus": "Exigir 4/5 votos, Price Action em S/R forte e espaço R:R >= 1:1.5 antes de S/R.",
+      "prioritizedIndicators": [
+        "Consenso 80%",
+        "R:R >= 1:1.5"
+      ],
+      "weight": 1.2
+    }
+  ],
+  "groundedSources": []
+}
