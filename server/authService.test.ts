@@ -168,3 +168,23 @@ test('AuthManager gives priority to configured process.env ADMIN credentials', (
     else process.env.ADMIN_PASSWORD = prevPass;
   }
 });
+
+test('AuthManager handles accidental quotes and trailing whitespace in Render env credentials', () => {
+  const prevEmail = process.env.ADMIN_EMAIL;
+  const prevPass = process.env.ADMIN_PASSWORD;
+  process.env.ADMIN_EMAIL = '  "admin@nextcandle.ai" \n';
+  process.env.ADMIN_PASSWORD = ' "EnvPassword!99" ';
+
+  try {
+    const manager = new AuthManager({ storePath: null });
+    const pass = manager.authenticate('admin@nextcandle.ai', 'EnvPassword!99');
+    assert.equal(pass.ok, true);
+    assert.equal(pass.role, 'admin');
+  } finally {
+    if (prevEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = prevEmail;
+    if (prevPass === undefined) delete process.env.ADMIN_PASSWORD;
+    else process.env.ADMIN_PASSWORD = prevPass;
+  }
+});
+

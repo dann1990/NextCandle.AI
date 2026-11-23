@@ -214,12 +214,30 @@ export class AuthManager {
     }
   }
 
+  private cleanEnvCredentialValue(raw: unknown): string {
+    if (typeof raw !== 'string') return '';
+    let cleaned = raw.replace(/[\r\n]+/g, '').trim();
+    if (
+      cleaned.length >= 2 &&
+      ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+        (cleaned.startsWith("'") && cleaned.endsWith("'")))
+    ) {
+      cleaned = cleaned.slice(1, -1).trim();
+    }
+    return cleaned;
+  }
+
   private getEnvConfiguredCredentials(): { email: string; password: string } | null {
-    const envPassword = process.env.ADMIN_PASSWORD || process.env.AUTH_PASSWORD;
-    if (typeof envPassword !== 'string' || envPassword.trim().length === 0) {
+    const envPassword =
+      this.cleanEnvCredentialValue(process.env.ADMIN_PASSWORD) ||
+      this.cleanEnvCredentialValue(process.env.AUTH_PASSWORD);
+    if (!envPassword) {
       return null;
     }
-    const envEmail = normalizeEmail(process.env.ADMIN_EMAIL || process.env.AUTH_EMAIL || '');
+    const envEmail = normalizeEmail(
+      this.cleanEnvCredentialValue(process.env.ADMIN_EMAIL) ||
+        this.cleanEnvCredentialValue(process.env.AUTH_EMAIL)
+    );
     return {
       email: envEmail,
       password: envPassword,
