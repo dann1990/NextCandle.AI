@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertCircle, ArrowRight, Eye, EyeOff, Lock, Mail } from 'lucide-react';
 import { NextCandleBrandLogo } from './NextCandleBrandLogo';
+import { isStaticHostApiUnavailable, resolveApiUrl } from '../utils/urlHelpers';
 
 export interface AuthSessionState {
   token: string;
@@ -51,7 +52,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     const endpoint = authMode === 'setup' ? '/api/auth/setup' : '/api/auth/login';
 
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetch(resolveApiUrl(endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -60,11 +61,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         }),
       });
 
+      if (isStaticHostApiUnavailable(response.status, response.headers.get('content-type'))) {
+        setErrorMsg(
+          'Servidor backend não encontrado neste host estático (o GitHub Pages não executa rotas /api). Publique a aplicação completa num servidor Node.js (Render, Railway ou Cloud Run) ou configure VITE_API_BASE_URL.'
+        );
+        return;
+      }
+
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         // Fallback smoothly to /api/auth/login if server was already claimed by another session
         if (response.status === 409 && endpoint === '/api/auth/setup') {
-          const loginRes = await fetch('/api/auth/login', {
+          const loginRes = await fetch(resolveApiUrl('/api/auth/login'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: trimmedEmail, password }),

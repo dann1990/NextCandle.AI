@@ -1,8 +1,8 @@
 {
-  "version": "v2.7-AI",
-  "updatedAt": 1795293676895,
-  "updatedBy": "ai_adaptive",
-  "marketRegimeSummary": "O regime atual em novembro de 2026 apresenta alta volatilidade decorrente de incertezas macroeconômicas globais, exigindo maior rigor no filtro de S/R e foco em convergência técnica.",
+  "version": "v2.8-Telemetria",
+  "updatedAt": 1795392045914,
+  "updatedBy": "telemetry_adaptive",
+  "marketRegimeSummary": "Calibração adaptativa para Sessão Asiática/Rollover (maior seletividade e filtro de range): pesos otimizados para filtragem de falsos rompimentos e proteção R:R ≥ 1:1.5.",
   "openMarketIndicators": [
     "EMA 20/50/200",
     "RSI (14) + Divergência",
@@ -39,13 +39,13 @@
     },
     {
       "id": "flow_volatility",
-      "openMarketFocus": "Monitorar expansão do ATR para evitar entradas em períodos de consolidação de baixa liquidez.",
+      "openMarketFocus": "Reduzir exposição em consolidações asiáticas; exigir deslocamento claro e ausência de spread alargado.",
       "otcFocus": "Monitorar a força das velas anteriores (momentum) antes de buscar a exaustão.",
       "prioritizedIndicators": [
         "ATR (14)",
         "Volume Delta"
       ],
-      "weight": 1
+      "weight": 1.1
     },
     {
       "id": "predictive_ml",
@@ -68,5 +68,6 @@
       "weight": 1.2
     }
   ],
-  "groundedSources": []
+  "groundedSources": [],
+  "notice": "Calibração ajustada via telemetria Win/Loss e sessão de mercado."
 }

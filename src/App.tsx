@@ -39,6 +39,7 @@ import {
   SOUND_SETTINGS_STORAGE_KEY,
   soundNotifier,
 } from './utils/soundNotifier';
+import { isStaticHostApiUnavailable, resolveApiUrl } from './utils/urlHelpers';
 import { AlertCircle, ShieldAlert, ShieldCheck, Wallet } from 'lucide-react';
 
 const LOCAL_STORAGE_KEY = 'nextcandle_analysis_history_v1';
@@ -130,7 +131,7 @@ export default function App() {
     }
 
     const statusAbort = new AbortController();
-    fetch('/api/auth/status', { signal: statusAbort.signal })
+    fetch(resolveApiUrl('/api/auth/status'), { signal: statusAbort.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && (data.mode === 'setup' || data.mode === 'login')) {
@@ -153,7 +154,7 @@ export default function App() {
   useEffect(() => {
     if (!authSession) return;
     const calAbort = new AbortController();
-    fetch('/api/agent-calibration', {
+    fetch(resolveApiUrl('/api/agent-calibration'), {
       signal: calAbort.signal,
       headers: { Authorization: `Bearer ${authSession.token}` },
     })
@@ -185,7 +186,7 @@ export default function App() {
 
     const verifySession = async () => {
       try {
-        const res = await fetch('/api/auth/session', {
+        const res = await fetch(resolveApiUrl('/api/auth/session'), {
           headers: { Authorization: `Bearer ${authSession.token}` },
         });
         if (res.status === 401) {
@@ -330,7 +331,7 @@ export default function App() {
           .map((s) => `${s.asset} ${s.timeframe} (${s.winRate}%)`),
       };
 
-      const res = await fetch('/api/agent-calibration/refresh', {
+      const res = await fetch(resolveApiUrl('/api/agent-calibration/refresh'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -381,7 +382,7 @@ export default function App() {
         const optimizedImage = await compressImageForAnalysis(targetImage);
         if (controller.signal.aborted || requestId !== activeRequestIdRef.current) return;
 
-        const response = await fetch('/api/analyze-chart', {
+        const response = await fetch(resolveApiUrl('/api/analyze-chart'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -402,6 +403,12 @@ export default function App() {
             analysisTimestampMs: now.getTime(),
           }),
         });
+
+        if (isStaticHostApiUnavailable(response.status, response.headers.get('content-type'))) {
+          throw new Error(
+            'Servidor backend não encontrado neste host estático. Publique em um servidor Node.js ou configure VITE_API_BASE_URL.'
+          );
+        }
 
         if (response.status === 401) {
           const errData = await response.json().catch(() => ({}));
@@ -521,7 +528,7 @@ export default function App() {
     (reasonNotice?: string) => {
       const token = authSession?.token;
       if (token) {
-        fetch('/api/auth/logout', {
+        fetch(resolveApiUrl('/api/auth/logout'), {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
         }).catch(() => {});

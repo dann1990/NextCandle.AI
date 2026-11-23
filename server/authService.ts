@@ -641,6 +641,10 @@ export class AuthManager {
   }
 }
 
+const defaultDataDir = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(process.cwd(), '.data');
+
 export const authManager = new AuthManager({
-  storePath: path.resolve(process.cwd(), '.data', 'auth-store.json'),
+  storePath: path.join(defaultDataDir, 'auth-store.json'),
 });

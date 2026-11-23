@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { NextFunction, Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -47,27 +48,59 @@ import {
 } from './server/aiCalibrationService.js';
 import { authManager, SessionPayload } from './server/authService.js';
 
-dotenv.config();
+if (fs.existsSync('/etc/secrets/.env')) {
+  dotenv.config({ path: '/etc/secrets/.env', override: false });
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 app.disable('x-powered-by');
-app.use((_req, res, next) => {
+app.set('trust proxy', 1);
+const allowedCorsOrigins = new Set(
+  (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map((o) => o.trim().replace(/\/+$/, ''))
+    .filter(Boolean)
+);
+
+app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  next();
+
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin.replace(/\/+$/, '') : '';
+  if (origin && allowedCorsOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+  }
+
+  return next();
 });
-const port = process.env.PORT || 3000;
+const port = Number(process.env.PORT) || 3000;
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  return res.status(200).json({
+    ok: true,
+    status: 'healthy',
+    uptimeSeconds: Math.floor(process.uptime()),
+  });
+});
 
 // Body parser with generous payload size for high-res chart screenshots
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 // Initialize Gemini client with aistudio-build telemetry header
-const apiKey = process.env.GEMINI_API_KEY;
+const rawApiKey = process.env.GEMINI_API_KEY;
+const apiKey =
+  typeof rawApiKey === 'string' ? rawApiKey.trim().replace(/^["']|["']$/g, '') : '';
 let aiClient: GoogleGenAI | null = null;
 if (apiKey && apiKey !== 'MY_GEMINI_API_KEY') {
   aiClient = new GoogleGenAI({
@@ -277,6 +310,18 @@ app.get('/api/admin/test-users', requireAdmin, (_req: Request, res: Response) =>
   return res.json({
     accounts: authManager.listTemporaryTestAccounts(),
     serverNow: Date.now(),
+    diagnostics: {
+      aiConfigured: Boolean(aiClient),
+      sessionSecretConfigured:
+        typeof process.env.AUTH_SESSION_SECRET === 'string' &&
+        process.env.AUTH_SESSION_SECRET.trim().length >= 16,
+      persistentDataDirConfigured: Boolean(
+        process.env.DATA_DIR &&
+          process.env.DATA_DIR.trim().length > 0 &&
+          process.env.DATA_DIR.trim() !== '.data'
+      ),
+      authSource: authManager.getAuthSource(),
+    },
   });
 });
 
@@ -1281,7 +1326,11 @@ function generateIntelligentFallbackAnalysis(
 
 // Start dev or production server
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  const isBundledProdBuild =
+    path.basename(__filename) === 'server.js' && fs.existsSync(path.join(__dirname, 'index.html'));
+  const isProduction = process.env.NODE_ENV === 'production' || isBundledProdBuild;
+
+  if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1299,8 +1348,8 @@ async function startServer() {
     });
   }
 
-  app.listen(port, () => {
-    console.log(`NextCandle.AI Multi-Agent Terminal rodando em http://localhost:${port}`);
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`NextCandle.AI Multi-Agent Terminal rodando na porta ${port}`);
   });
 }
 

@@ -4,7 +4,9 @@ import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { AgentCalibrationProfile, AgentId } from '../src/types/trading.js';
 import { extractJsonObject } from '../src/utils/consensusEngine.js';
 
-const CALIBRATION_FILE = path.join(process.cwd(), '.nextcandle-calibration.json');
+const CALIBRATION_FILE = process.env.DATA_DIR
+  ? path.join(path.resolve(process.env.DATA_DIR), 'nextcandle-calibration.json')
+  : path.join(process.cwd(), '.nextcandle-calibration.json');
 const AUTO_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const QUOTA_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes cooldown after 429
 
@@ -141,6 +143,10 @@ function loadCalibrationFromDisk(): AgentCalibrationProfile {
 
 function saveCalibrationToDisk(profile: AgentCalibrationProfile) {
   try {
+    const dir = path.dirname(CALIBRATION_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     fs.writeFileSync(CALIBRATION_FILE, JSON.stringify(profile, null, 2), 'utf-8');
   } catch {
     // Ignore disk write errors on read-only environments

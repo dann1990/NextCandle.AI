@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { stripCheckerboardAndComputeBounds } from '../utils/logoProcessor';
+import { resolvePublicAssetUrl } from '../utils/urlHelpers';
 
-export const ATTACHED_NEXTCANDLE_LOGO_PATH =
-  '/assets/aistudio/Gemini_Generated_Image_lk704wlk704wlk70_22e07f9e.jfif';
+export const ATTACHED_NEXTCANDLE_LOGO_PATH = resolvePublicAssetUrl(
+  'assets/aistudio/Gemini_Generated_Image_lk704wlk704wlk70_22e07f9e.jfif'
+);
 
 let cachedCleanLogoPromise: Promise<string | null> | null = null;
 
@@ -80,14 +82,17 @@ export const NextCandleBrandLogo: React.FC<NextCandleBrandLogoProps> = ({
   alt = 'Logo NextCandle',
 }) => {
   const [cleanSrc, setCleanSrc] = useState<string | null>(null);
+  const [logoReady, setLogoReady] = useState(false);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let active = true;
     getCleanLogoDataUrl().then((result) => {
-      if (active && result) {
+      if (!active) return;
+      if (result) {
         setCleanSrc(result);
       }
+      setLogoReady(true);
     });
     return () => {
       active = false;
@@ -111,7 +116,7 @@ export const NextCandleBrandLogo: React.FC<NextCandleBrandLogoProps> = ({
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}
       className={`object-contain select-none transition-opacity duration-150 ${
-        cleanSrc ? 'opacity-100' : 'opacity-0'
+        logoReady ? 'opacity-100' : 'opacity-0'
       } ${className}`}
     />
   );

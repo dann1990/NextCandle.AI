@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { formatRemainingAccessTime } from '../utils/accessTimer';
 import { formatDateTimeInTimeZone, getBrowserTimeZone, normalizeTimeZone } from '../utils/timezone';
+import { resolveApiUrl } from '../utils/urlHelpers';
 
 export interface AdminTestAccountItem {
   id: string;
@@ -35,6 +36,13 @@ interface GeneratedCredentialPreview {
   note: string;
   createdAt: number;
   expiresAt: number;
+}
+
+interface AdminDiagnostics {
+  aiConfigured: boolean;
+  sessionSecretConfigured: boolean;
+  persistentDataDirConfigured: boolean;
+  authSource: 'env' | 'claimed' | 'none';
 }
 
 interface AdminPanelProps {
@@ -65,6 +73,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     useState<GeneratedCredentialPreview | null>(null);
   const [copiedField, setCopiedField] = useState<'all' | 'email' | 'password' | null>(null);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
+  const [diagnostics, setDiagnostics] = useState<AdminDiagnostics | null>(null);
 
   // Tick every 1 second so live 24h countdowns update in real time
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
@@ -83,7 +92,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/admin/test-users', {
+      const res = await fetch(resolveApiUrl('/api/admin/test-users'), {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.status === 401 || res.status === 403) {
@@ -97,6 +106,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }
       if (typeof data.serverNow === 'number') {
         setClockOffsetMs(data.serverNow - Date.now());
+      }
+      if (data.diagnostics && typeof data.diagnostics === 'object') {
+        setDiagnostics(data.diagnostics as AdminDiagnostics);
       }
       setAccounts(Array.isArray(data.accounts) ? data.accounts : []);
     } catch {
@@ -115,7 +127,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setIsCreating(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/admin/test-users', {
+      const res = await fetch(resolveApiUrl('/api/admin/test-users'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -160,8 +172,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleRevokeAccount = async (id: string) => {
     setErrorMsg(null);
     try {
-      const res = await fetch(`/api/admin/test-users/${encodeURIComponent(id)}/revoke`, {
-        method: 'POST',
+      const res = await fetch(
+        resolveApiUrl(`/api/admin/test-users/${encodeURIComponent(id)}/revoke`),
+        {
+          method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.status === 401 || res.status === 403) {
@@ -182,7 +196,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleDeleteAccount = async (id: string) => {
     setErrorMsg(null);
     try {
-      const res = await fetch(`/api/admin/test-users/${encodeURIComponent(id)}`, {
+      const res = await fetch(resolveApiUrl(`/api/admin/test-users/${encodeURIComponent(id)}`), {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -295,6 +309,76 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <p className="text-2xl font-bold text-white tabular-nums mt-1">{counts.total}</p>
         </div>
       </div>
+
+      {/* Render / Production Environment Diagnostics (Admin Only) */}
+      {diagnostics && (
+        <div className="bg-slate-900/40 border border-slate-800/80 rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-200">
+              Estado do Ambiente no Servidor (Deploy)
+            </span>
+            <span className="text-[11px] font-mono text-slate-400">
+              Auth: {diagnostics.authSource === 'env' ? 'Variáveis Render (ADMIN_*)' : 'Primeiro Acesso'}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+            <div
+              className={`rounded-lg border px-3 py-2 flex items-center gap-2 ${
+                diagnostics.aiConfigured
+                  ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-300'
+                  : 'bg-amber-950/30 border-amber-800/50 text-amber-300'
+              }`}
+            >
+              {diagnostics.aiConfigured ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" aria-hidden="true" />
+              )}
+              <span>
+                GEMINI_API_KEY: {diagnostics.aiConfigured ? 'Ativa' : 'Pendente (Contingência)'}
+              </span>
+            </div>
+
+            <div
+              className={`rounded-lg border px-3 py-2 flex items-center gap-2 ${
+                diagnostics.sessionSecretConfigured
+                  ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-300'
+                  : 'bg-amber-950/30 border-amber-800/50 text-amber-300'
+              }`}
+            >
+              {diagnostics.sessionSecretConfigured ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" aria-hidden="true" />
+              )}
+              <span>
+                AUTH_SESSION_SECRET:{' '}
+                {diagnostics.sessionSecretConfigured ? 'Fixo (Seguro)' : 'Efêmero (Reinicia)'}
+              </span>
+            </div>
+
+            <div
+              className={`rounded-lg border px-3 py-2 flex items-center gap-2 ${
+                diagnostics.persistentDataDirConfigured
+                  ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-300'
+                  : 'bg-slate-900/70 border-slate-700/70 text-slate-300'
+              }`}
+            >
+              {diagnostics.persistentDataDirConfigured ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
+              ) : (
+                <Clock className="w-4 h-4 text-slate-400 shrink-0" aria-hidden="true" />
+              )}
+              <span>
+                DATA_DIR:{' '}
+                {diagnostics.persistentDataDirConfigured
+                  ? 'Disco Persistente'
+                  : 'Local (Plano Free)'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Error Banner */}
       {errorMsg && (
