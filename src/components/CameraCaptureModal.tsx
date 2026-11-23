@@ -173,6 +173,9 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
 
   return (
     <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) handleClose();
+      }}
       className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
       role="dialog"
       aria-modal="true"

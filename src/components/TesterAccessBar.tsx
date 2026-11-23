@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Clock, ShieldAlert } from 'lucide-react';
 import { formatRemainingAccessTime } from '../utils/accessTimer';
 import { formatDateTimeInTimeZone, getBrowserTimeZone, normalizeTimeZone } from '../utils/timezone';
@@ -19,20 +19,28 @@ export const TesterAccessBar: React.FC<TesterAccessBarProps> = ({
   onExpired,
 }) => {
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  const onExpiredRef = useRef(onExpired);
+  const expiredTriggeredRef = useRef(false);
 
   useEffect(() => {
+    onExpiredRef.current = onExpired;
+  }, [onExpired]);
+
+  useEffect(() => {
+    expiredTriggeredRef.current = false;
     const checkNow = () => {
       const current = Date.now() + clockOffsetMs;
       setNowTick(Date.now());
-      if (current >= expiresAt) {
-        onExpired();
+      if (current >= expiresAt && !expiredTriggeredRef.current) {
+        expiredTriggeredRef.current = true;
+        onExpiredRef.current();
       }
     };
 
     checkNow();
     const intervalId = setInterval(checkNow, 1000);
     return () => clearInterval(intervalId);
-  }, [expiresAt, clockOffsetMs, onExpired]);
+  }, [expiresAt, clockOffsetMs]);
 
   const effectiveNow = nowTick + clockOffsetMs;
   const snapshot = formatRemainingAccessTime(expiresAt, effectiveNow);

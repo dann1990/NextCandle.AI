@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Download, Eye, EyeOff, Layers, Crosshair, BookOpen, Sparkles } from 'lucide-react';
+import { Download, Eye, EyeOff, Layers, Crosshair, BookOpen, Sparkles, AlertCircle, X } from 'lucide-react';
 import { AnalysisResult, VoteType } from '../types/trading';
 import {
   AnnotationCalloutBox,
@@ -93,6 +93,7 @@ export const AnnotatedChartView: React.FC<AnnotatedChartViewProps> = React.memo(
   const [showAnnotations, setShowAnnotations] = useState(true);
   const [imgDimensions, setImgDimensions] = useState<{ w: number; h: number }>({ w: 1280, h: 720 });
   const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
   const imageSrc = analysis.imagePreview;
@@ -125,6 +126,7 @@ export const AnnotatedChartView: React.FC<AnnotatedChartViewProps> = React.memo(
   const handleDownloadAnnotated = useCallback(async () => {
     if (!imageSrc || isExporting) return;
     setIsExporting(true);
+    setExportError(null);
     const canvas = document.createElement('canvas');
     try {
       const img = new Image();
@@ -154,7 +156,9 @@ export const AnnotatedChartView: React.FC<AnnotatedChartViewProps> = React.memo(
       canvas.width = exportW;
       canvas.height = exportH;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) {
+        throw new Error('Contexto gráfico 2D indisponível neste navegador.');
+      }
 
       ctx.drawImage(img, 0, 0, exportW, exportH);
       const exportLayout = computeAnnotationLayout(
@@ -314,8 +318,11 @@ export const AnnotatedChartView: React.FC<AnnotatedChartViewProps> = React.memo(
       link.download = `nextcandle-${safeAsset}-anotado.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao exportar imagem anotada:', err);
+      setExportError(
+        err?.message || 'Não foi possível exportar a imagem anotada neste navegador.'
+      );
     } finally {
       canvas.width = 0;
       canvas.height = 0;
@@ -456,6 +463,26 @@ export const AnnotatedChartView: React.FC<AnnotatedChartViewProps> = React.memo(
           </button>
         </div>
       </div>
+
+      {exportError && (
+        <div
+          role="alert"
+          className="mb-4 px-3.5 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs flex items-center justify-between gap-2"
+        >
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{exportError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setExportError(null)}
+            aria-label="Fechar aviso de exportação"
+            className="text-rose-300 hover:text-white p-1 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Annotated Image Canvas Stage */}
       <div className="rounded-xl border border-slate-800 bg-[#070b12] p-2 sm:p-3 flex justify-center overflow-hidden">

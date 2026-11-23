@@ -69,6 +69,7 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [authSession, setAuthSession] = useState<AuthSessionState | null>(null);
+  const [isCheckingSession, setIsCheckingSession] = useState<boolean>(true);
   const [authMode, setAuthMode] = useState<'login' | 'setup'>('login');
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<'terminal' | 'admin'>('terminal');
@@ -131,14 +132,34 @@ export default function App() {
     }
 
     const statusAbort = new AbortController();
-    fetch(resolveApiUrl('/api/auth/status'), { signal: statusAbort.signal })
+    fetch(resolveApiUrl('/api/auth/status'), {
+      signal: statusAbort.signal,
+      credentials: 'include',
+    })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && (data.mode === 'setup' || data.mode === 'login')) {
           setAuthMode(data.mode);
         }
+        if (data?.session && typeof data.session.email === 'string') {
+          setAuthSession((prev) =>
+            prev ?? {
+              token: '',
+              email: data.session.email,
+              role: data.session.role === 'tester' ? 'tester' : 'admin',
+              expiresAt: typeof data.session.expiresAt === 'number' ? data.session.expiresAt : null,
+              clockOffsetMs:
+                typeof data.session.serverNow === 'number'
+                  ? data.session.serverNow - Date.now()
+                  : 0,
+            }
+          );
+        }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        setIsCheckingSession(false);
+      });
 
     return () => {
       statusAbort.abort();
@@ -156,7 +177,8 @@ export default function App() {
     const calAbort = new AbortController();
     fetch(resolveApiUrl('/api/agent-calibration'), {
       signal: calAbort.signal,
-      headers: { Authorization: `Bearer ${authSession.token}` },
+      credentials: 'include',
+      headers: authSession.token ? { Authorization: `Bearer ${authSession.token}` } : undefined,
     })
       .then(async (res) => {
         if (res.status === 401) {
@@ -187,7 +209,8 @@ export default function App() {
     const verifySession = async () => {
       try {
         const res = await fetch(resolveApiUrl('/api/auth/session'), {
-          headers: { Authorization: `Bearer ${authSession.token}` },
+          credentials: 'include',
+          headers: authSession.token ? { Authorization: `Bearer ${authSession.token}` } : undefined,
         });
         if (res.status === 401) {
           const errData = await res.json().catch(() => ({}));
@@ -264,10 +287,11 @@ export default function App() {
     }
   }, []);
 
-  // Save history to localStorage with QuotaExceededError protection
-  const persistHistory = useCallback((updatedHistory: AnalysisResult[]) => {
+  // Save history to localStorage with QuotaExceededError protection & state synchronization
+  const persistHistory = useCallback((updatedHistory: AnalysisResult[]): { stored: AnalysisResult[]; compacted: boolean; failed: boolean } => {
     try {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updatedHistory));
+      return { stored: updatedHistory, compacted: false, failed: false };
     } catch {
       try {
         const compacted = updatedHistory.slice(0, 25).map((item, idx) =>
@@ -276,6 +300,7 @@ export default function App() {
             : { ...item, imagePreview: undefined, macroImagePreview: undefined, timeframeImages: undefined }
         );
         localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(compacted));
+        return { stored: compacted, compacted: true, failed: false };
       } catch {
         try {
           const minimal = updatedHistory.slice(0, 15).map((item, idx) =>
@@ -284,8 +309,10 @@ export default function App() {
               : { ...item, imagePreview: undefined, macroImagePreview: undefined, timeframeImages: undefined }
           );
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(minimal));
+          return { stored: minimal, compacted: true, failed: false };
         } catch (err) {
           console.error('Erro ao salvar histórico local (limite de armazenamento):', err);
+          return { stored: updatedHistory, compacted: false, failed: true };
         }
       }
     }
@@ -294,9 +321,12 @@ export default function App() {
   const saveHistory = useCallback(
     (updater: AnalysisResult[] | ((prev: AnalysisResult[]) => AnalysisResult[])) => {
       const next = typeof updater === 'function' ? updater(historyRef.current) : updater;
-      historyRef.current = next;
-      setHistory(next);
-      persistHistory(next);
+      const result = persistHistory(next);
+      historyRef.current = result.stored;
+      setHistory(result.stored);
+      if (result.failed) {
+        setErrorMessage('Aviso: armazenamento local do navegador cheio; esta análise não pôde ser guardada no histórico.');
+      }
     },
     [persistHistory]
   );
@@ -333,9 +363,10 @@ export default function App() {
 
       const res = await fetch(resolveApiUrl('/api/agent-calibration/refresh'), {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          ...(authSession ? { Authorization: `Bearer ${authSession.token}` } : {}),
+          ...(authSession?.token ? { Authorization: `Bearer ${authSession.token}` } : {}),
         },
         body: JSON.stringify({ performanceFeedback }),
       });
@@ -384,9 +415,10 @@ export default function App() {
 
         const response = await fetch(resolveApiUrl('/api/analyze-chart'), {
           method: 'POST',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
-            ...(authSession ? { Authorization: `Bearer ${authSession.token}` } : {}),
+            ...(authSession?.token ? { Authorization: `Bearer ${authSession.token}` } : {}),
           },
           signal: controller.signal,
           body: JSON.stringify({
@@ -429,16 +461,18 @@ export default function App() {
         setCurrentAnalysis(data);
         soundNotifier.playAnalysisSuccess(data.verdict.verdict);
 
-        const thumbnail = await createHistoryThumbnail(data.imagePreview || optimizedImage);
-        if (requestId !== activeRequestIdRef.current) return;
+        if (data.analysisSource !== 'heuristic_fallback') {
+          const thumbnail = await createHistoryThumbnail(data.imagePreview || optimizedImage);
+          if (requestId !== activeRequestIdRef.current) return;
 
-        const historyRecord: AnalysisResult = {
-          ...data,
-          imagePreview: thumbnail,
-          timeframeImages: undefined,
-        };
+          const historyRecord: AnalysisResult = {
+            ...data,
+            imagePreview: thumbnail,
+            timeframeImages: undefined,
+          };
 
-        saveHistory((prev) => [historyRecord, ...prev.filter((h) => h.id !== data.id)].slice(0, 50));
+          saveHistory((prev) => [historyRecord, ...prev.filter((h) => h.id !== data.id)].slice(0, 50));
+        }
 
         if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
         scrollTimerRef.current = setTimeout(() => {
@@ -477,17 +511,27 @@ export default function App() {
     setErrorMessage(null);
   }, []);
 
+  const handleCancelAnalysis = useCallback(() => {
+    activeRequestIdRef.current += 1;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsAnalyzing(false);
+    setErrorMessage('Análise cancelada pelo utilizador.');
+  }, []);
+
   const handleToggleOutcome = useCallback(
     (id: string, outcome: 'win' | 'loss' | 'pending') => {
       const nextRecords = historyRef.current.map((item) =>
         item.id === id ? { ...item, outcome } : item
       );
-      historyRef.current = nextRecords;
-      setHistory(nextRecords);
-      persistHistory(nextRecords);
+      const result = persistHistory(nextRecords);
+      historyRef.current = result.stored;
+      setHistory(result.stored);
 
       if (outcome === 'win' || outcome === 'loss') {
-        void syncCalibrationAutomatically(nextRecords);
+        void syncCalibrationAutomatically(result.stored);
       }
       setCurrentAnalysis((prev) => (prev && prev.id === id ? { ...prev, outcome } : prev));
     },
@@ -504,9 +548,11 @@ export default function App() {
       computeDailyBankrollProtection(
         history,
         bankrollSettings.bankrollAmount,
-        bankrollSettings.riskPercent
+        bankrollSettings.riskPercent,
+        new Date(),
+        selectedTimezone
       ),
-    [history, bankrollSettings.bankrollAmount, bankrollSettings.riskPercent]
+    [history, bankrollSettings.bankrollAmount, bankrollSettings.riskPercent, selectedTimezone]
   );
 
   const handleClearHistory = useCallback(() => {
@@ -527,12 +573,11 @@ export default function App() {
   const handleLogout = useCallback(
     (reasonNotice?: string) => {
       const token = authSession?.token;
-      if (token) {
-        fetch(resolveApiUrl('/api/auth/logout'), {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-        }).catch(() => {});
-      }
+      fetch(resolveApiUrl('/api/auth/logout'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      }).catch(() => {});
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -554,6 +599,17 @@ export default function App() {
       'O acesso temporário de 24 horas expirou e a conta foi bloqueada automaticamente.'
     );
   }, [handleLogout]);
+
+  if (isCheckingSession && !authSession) {
+    return (
+      <div className="min-h-screen bg-[#0b0f19] text-slate-300 flex items-center justify-center font-mono text-xs">
+        <div className="flex items-center gap-3">
+          <div className="w-5 h-5 rounded-full border-2 border-emerald-500/30 border-t-emerald-400 animate-spin" />
+          <span>A verificar sessão segura...</span>
+        </div>
+      </div>
+    );
+  }
 
   if (!authSession) {
     return (
@@ -708,7 +764,9 @@ export default function App() {
           onChangeMarketEnvironment={handleChangeMarketEnvironment}
           onImageSelected={handleImageSelected}
           onClearImage={handleClearImage}
+          onCancelAnalysis={handleCancelAnalysis}
           isAnalyzing={isAnalyzing}
+          isModalOpen={isHistoryOpen || isArchitectureOpen}
           soundEnabled={soundEnabled}
         />
 

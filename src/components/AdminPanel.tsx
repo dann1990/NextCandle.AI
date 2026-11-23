@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -55,6 +55,49 @@ interface AdminPanelProps {
 
 type FilterMode = 'all' | 'active' | 'blocked';
 
+const AccountCountdownRowCell: React.FC<{
+  expiresAt: number;
+  clockOffsetMs: number;
+  onReachExpiry?: () => void;
+}> = React.memo(({ expiresAt, clockOffsetMs, onReachExpiry }) => {
+  const [tick, setTick] = useState<number>(() => Date.now());
+  const triggeredRef = useRef(false);
+  const onReachExpiryRef = useRef(onReachExpiry);
+
+  useEffect(() => {
+    onReachExpiryRef.current = onReachExpiry;
+  }, [onReachExpiry]);
+
+  useEffect(() => {
+    triggeredRef.current = false;
+    const id = setInterval(() => {
+      const now = Date.now();
+      setTick(now);
+      if (now + clockOffsetMs >= expiresAt && !triggeredRef.current) {
+        triggeredRef.current = true;
+        onReachExpiryRef.current?.();
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [expiresAt, clockOffsetMs]);
+
+  const timer = formatRemainingAccessTime(expiresAt, tick + clockOffsetMs);
+  if (timer.isExpired) {
+    return <span className="text-slate-500">00h 00m 00s</span>;
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 ${
+        timer.isExpiringSoon ? 'text-amber-300' : 'text-slate-200'
+      }`}
+    >
+      <Clock className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+      <span>{timer.formatted}</span>
+    </span>
+  );
+});
+
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   token,
   adminEmail,
@@ -75,25 +118,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   const [diagnostics, setDiagnostics] = useState<AdminDiagnostics | null>(null);
 
-  // Tick every 1 second so live 24h countdowns update in real time
-  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  // Only recalculate static table status/counts on API updates or when a row crosses expiration
+  const [statusAnchorMs, setStatusAnchorMs] = useState<number>(() => Date.now());
   const [clockOffsetMs, setClockOffsetMs] = useState<number>(0);
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      setNowTick(Date.now());
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
+  const authHeaders = useMemo(
+    () => (token ? { Authorization: `Bearer ${token}` } : undefined),
+    [token]
+  );
 
-  const effectiveNow = nowTick + clockOffsetMs;
+  const effectiveNow = statusAnchorMs + clockOffsetMs;
 
   const fetchAccounts = useCallback(async () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
       const res = await fetch(resolveApiUrl('/api/admin/test-users'), {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
+        headers: authHeaders,
       });
       if (res.status === 401 || res.status === 403) {
         onSessionExpired('Sessão de administrador expirada ou inválida.');
@@ -104,6 +146,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setErrorMsg(data.error || 'Erro ao carregar credenciais temporárias.');
         return;
       }
+      setStatusAnchorMs(Date.now());
       if (typeof data.serverNow === 'number') {
         setClockOffsetMs(data.serverNow - Date.now());
       }
@@ -116,7 +159,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [token, onSessionExpired]);
+  }, [authHeaders, onSessionExpired]);
 
   useEffect(() => {
     void fetchAccounts();
@@ -129,9 +172,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     try {
       const res = await fetch(resolveApiUrl('/api/admin/test-users'), {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          ...(authHeaders || {}),
         },
         body: JSON.stringify({
           email: customEmail.trim(),
@@ -150,6 +194,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         return;
       }
 
+      setStatusAnchorMs(Date.now());
       if (typeof data.serverNow === 'number') {
         setClockOffsetMs(data.serverNow - Date.now());
       }
@@ -176,14 +221,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         resolveApiUrl(`/api/admin/test-users/${encodeURIComponent(id)}/revoke`),
         {
           method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+          credentials: 'include',
+          headers: authHeaders,
+        }
+      );
       if (res.status === 401 || res.status === 403) {
         onSessionExpired('Sessão de administrador expirada.');
         return;
       }
       const data = await res.json().catch(() => ({}));
       if (res.ok && Array.isArray(data.accounts)) {
+        setStatusAnchorMs(Date.now());
         setAccounts(data.accounts);
       } else {
         setErrorMsg(data.error || 'Falha ao revogar acesso.');
@@ -198,7 +246,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     try {
       const res = await fetch(resolveApiUrl(`/api/admin/test-users/${encodeURIComponent(id)}`), {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
+        headers: authHeaders,
       });
       if (res.status === 401 || res.status === 403) {
         onSessionExpired('Sessão de administrador expirada.');
@@ -206,6 +255,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }
       const data = await res.json().catch(() => ({}));
       if (res.ok && Array.isArray(data.accounts)) {
+        setStatusAnchorMs(Date.now());
         setAccounts(data.accounts);
         if (generatedCredential?.id === id) {
           setGeneratedCredential(null);
@@ -228,19 +278,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const handleRowReachExpiry = useCallback(() => {
+    setStatusAnchorMs(Date.now());
+  }, []);
+
   const liveAccounts = useMemo(() => {
     return accounts.map((acc) => {
-      const timer = formatRemainingAccessTime(acc.expiresAt, effectiveNow);
+      const isExpired = effectiveNow >= acc.expiresAt;
       const liveStatus: 'active' | 'expired' | 'revoked' = acc.revoked
         ? 'revoked'
-        : timer.isExpired
+        : isExpired
         ? 'expired'
         : 'active';
       return {
         ...acc,
         liveStatus,
-        remainingFormatted: timer.formatted,
-        isExpiringSoon: timer.isExpiringSoon,
       };
     });
   }, [accounts, effectiveNow]);
@@ -335,7 +387,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" aria-hidden="true" />
               )}
               <span>
-                GEMINI_API_KEY: {diagnostics.aiConfigured ? 'Ativa' : 'Pendente (Contingência)'}
+                GEMINI_API_KEY: {diagnostics.aiConfigured ? 'Ativa' : 'Não Configurada'}
               </span>
             </div>
 
@@ -640,14 +692,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </td>
                     <td className="py-3 pr-4 whitespace-nowrap font-mono tabular-nums">
                       {acc.liveStatus === 'active' ? (
-                        <span
-                          className={`inline-flex items-center gap-1.5 ${
-                            acc.isExpiringSoon ? 'text-amber-300' : 'text-slate-200'
-                          }`}
-                        >
-                          <Clock className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-                          <span>{acc.remainingFormatted}</span>
-                        </span>
+                        <AccountCountdownRowCell
+                          expiresAt={acc.expiresAt}
+                          clockOffsetMs={clockOffsetMs}
+                          onReachExpiry={handleRowReachExpiry}
+                        />
                       ) : (
                         <span className="text-slate-500">00h 00m 00s</span>
                       )}

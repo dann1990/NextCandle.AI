@@ -96,7 +96,9 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = React.memo(({
     const bankrollProtection = computeDailyBankrollProtection(
       records,
       bankrollSettings.bankrollAmount,
-      bankrollSettings.riskPercent
+      bankrollSettings.riskPercent,
+      new Date(),
+      activeTimezone
     );
 
     return {
@@ -110,7 +112,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = React.memo(({
       ranking,
       bankrollProtection,
     };
-  }, [isOpen, records, bankrollSettings.bankrollAmount, bankrollSettings.riskPercent]);
+  }, [isOpen, records, bankrollSettings.bankrollAmount, bankrollSettings.riskPercent, activeTimezone]);
 
   if (!isOpen || !drawerStats) return null;
 
@@ -128,6 +130,9 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = React.memo(({
 
   return (
     <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
       className="fixed inset-0 z-50 overflow-hidden bg-black/60 backdrop-blur-sm flex justify-end"
       role="dialog"
       aria-modal="true"

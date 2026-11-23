@@ -2,6 +2,11 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
+import { promisify } from 'util';
+
+const scryptAsync = promisify(crypto.scrypt);
+export const SESSION_COOKIE_NAME = 'nc_session';
+
 export type UserRole = 'admin' | 'tester';
 
 export interface SessionPayload {
@@ -48,9 +53,15 @@ export interface AuthValidationResult {
   error?: string;
 }
 
+interface RevokedTokenEntry {
+  jti: string;
+  exp: number;
+}
+
 interface PersistedAuthStore {
   claimedAccount: ClaimedCredentialRecord | null;
   testAccounts: TemporaryTestAccountRecord[];
+  revokedTokens?: RevokedTokenEntry[];
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -119,6 +130,18 @@ export function hashPasswordWithSalt(password: string, existingSalt?: string): {
   };
 }
 
+export async function hashPasswordWithSaltAsync(
+  password: string,
+  existingSalt?: string
+): Promise<{ salt: string; hash: string }> {
+  const salt = existingSalt || crypto.randomBytes(16).toString('hex');
+  const derivedKey = (await scryptAsync(password, salt, 64)) as Buffer;
+  return {
+    salt,
+    hash: derivedKey.toString('hex'),
+  };
+}
+
 export function verifyPasswordAgainstHash(
   password: string,
   salt: string,
@@ -135,11 +158,45 @@ export function verifyPasswordAgainstHash(
   }
 }
 
+export async function verifyPasswordAgainstHashAsync(
+  password: string,
+  salt: string,
+  expectedHashHex: string
+): Promise<boolean> {
+  if (!password || !salt || !expectedHashHex) return false;
+  try {
+    const derived = (await scryptAsync(password, salt, 64)) as Buffer;
+    const expected = Buffer.from(expectedHashHex, 'hex');
+    if (derived.length !== expected.length) return false;
+    return crypto.timingSafeEqual(derived, expected);
+  } catch {
+    return false;
+  }
+}
+
 export function constantTimeStringMatch(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf8');
-  const bufB = Buffer.from(b, 'utf8');
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
+  // Hash to fixed 32-byte digests first so string length is never leaked via timing
+  const digestA = crypto.createHash('sha256').update(a, 'utf8').digest();
+  const digestB = crypto.createHash('sha256').update(b, 'utf8').digest();
+  return crypto.timingSafeEqual(digestA, digestB);
+}
+
+export function parseCookieHeader(cookieHeader: unknown): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  if (typeof cookieHeader !== 'string' || !cookieHeader) return cookies;
+  for (const part of cookieHeader.split(';')) {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx === -1) continue;
+    const name = part.slice(0, eqIdx).trim();
+    const val = part.slice(eqIdx + 1).trim();
+    if (!name) continue;
+    try {
+      cookies[name] = decodeURIComponent(val);
+    } catch {
+      cookies[name] = val;
+    }
+  }
+  return cookies;
 }
 
 export function generateTemporaryPassword(length = 12): string {
@@ -159,7 +216,8 @@ export interface AuthManagerOptions {
 export class AuthManager {
   private claimedAccount: ClaimedCredentialRecord | null = null;
   private testAccounts: TemporaryTestAccountRecord[] = [];
-  private revokedTokenIds = new Set<string>();
+  private revokedTokens = new Map<string, number>();
+  private writeQueue: Promise<void> = Promise.resolve();
   private readonly storePath: string | null;
   private readonly nowFn: () => number;
 
@@ -167,6 +225,14 @@ export class AuthManager {
     this.storePath = options.storePath === undefined ? null : options.storePath;
     this.nowFn = options.nowFn || (() => Date.now());
     this.loadStoreFromDisk();
+  }
+
+  private pruneExpiredRevocations(now = this.nowFn()): void {
+    for (const [jti, exp] of this.revokedTokens.entries()) {
+      if (now >= exp) {
+        this.revokedTokens.delete(jti);
+      }
+    }
   }
 
   private loadStoreFromDisk(): void {
@@ -189,9 +255,31 @@ export class AuthManager {
             typeof acc.expiresAt === 'number'
         );
       }
+      if (Array.isArray(parsed.revokedTokens)) {
+        const now = this.nowFn();
+        for (const entry of parsed.revokedTokens) {
+          if (
+            entry &&
+            typeof entry.jti === 'string' &&
+            typeof entry.exp === 'number' &&
+            entry.exp > now
+          ) {
+            this.revokedTokens.set(entry.jti, entry.exp);
+          }
+        }
+      }
     } catch {
       // Ignore corrupt/unreadable auth store on boot
     }
+  }
+
+  private buildPersistedPayload(): PersistedAuthStore {
+    this.pruneExpiredRevocations();
+    return {
+      claimedAccount: this.claimedAccount,
+      testAccounts: this.testAccounts,
+      revokedTokens: Array.from(this.revokedTokens.entries()).map(([jti, exp]) => ({ jti, exp })),
+    };
   }
 
   private saveStoreToDisk(): void {
@@ -201,17 +289,34 @@ export class AuthManager {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
-      const payload: PersistedAuthStore = {
-        claimedAccount: this.claimedAccount,
-        testAccounts: this.testAccounts,
-      };
-      fs.writeFileSync(this.storePath, JSON.stringify(payload, null, 2), {
+      fs.writeFileSync(this.storePath, JSON.stringify(this.buildPersistedPayload(), null, 2), {
         encoding: 'utf8',
         mode: 0o600,
       });
     } catch {
       // Fail safely without leaking credentials
     }
+  }
+
+  private saveStoreToDiskAsync(): Promise<void> {
+    if (!this.storePath) return Promise.resolve();
+    const targetPath = this.storePath;
+    const serialized = JSON.stringify(this.buildPersistedPayload(), null, 2);
+
+    this.writeQueue = this.writeQueue
+      .then(async () => {
+        const dir = path.dirname(targetPath);
+        await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+        await fs.promises.writeFile(targetPath, serialized, {
+          encoding: 'utf8',
+          mode: 0o600,
+        });
+      })
+      .catch(() => {
+        // Fail safely without leaking credentials
+      });
+
+    return this.writeQueue;
   }
 
   private cleanEnvCredentialValue(raw: unknown): string {
@@ -312,6 +417,62 @@ export class AuthManager {
     };
   }
 
+  public async setupFirstAccessAsync(rawEmail: unknown, rawPassword: unknown): Promise<{
+    ok: boolean;
+    status: number;
+    email?: string;
+    role?: UserRole;
+    expiresAt?: number | null;
+    token?: string;
+    error?: string;
+  }> {
+    if (this.isConfigured()) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'O acesso de administrador já foi configurado. Utiliza o login com as tuas credenciais.',
+      };
+    }
+
+    const validation = validateAuthCredentialsInput(rawEmail, rawPassword);
+    if (!validation.valid) {
+      return {
+        ok: false,
+        status: 400,
+        error: validation.error,
+      };
+    }
+
+    const now = this.nowFn();
+    const { salt, hash } = await hashPasswordWithSaltAsync(rawPassword as string);
+    // Re-check after async hashing to prevent setup race
+    if (this.isConfigured()) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'O acesso de administrador já foi configurado. Utiliza o login com as tuas credenciais.',
+      };
+    }
+
+    this.claimedAccount = {
+      email: validation.email,
+      salt,
+      passwordHash: hash,
+      claimedAt: now,
+    };
+    await this.saveStoreToDiskAsync();
+
+    const token = this.issueSessionToken(validation.email, 'admin');
+    return {
+      ok: true,
+      status: 201,
+      email: validation.email,
+      role: 'admin',
+      expiresAt: null,
+      token,
+    };
+  }
+
   public authenticate(rawEmail: unknown, rawPassword: unknown): {
     ok: boolean;
     status: number;
@@ -380,6 +541,115 @@ export class AuthManager {
       const sorted = [...matchingTestAccounts].sort((a, b) => b.createdAt - a.createdAt);
       for (const acc of sorted) {
         const passwordMatches = verifyPasswordAgainstHash(password, acc.salt, acc.passwordHash);
+        if (!passwordMatches) continue;
+
+        if (acc.revoked) {
+          return {
+            ok: false,
+            status: 403,
+            error: 'Este acesso temporário foi revogado pelo administrador.',
+          };
+        }
+
+        if (now >= acc.expiresAt) {
+          return {
+            ok: false,
+            status: 403,
+            error:
+              'Acesso temporário expirado: a validade de 24 horas terminou e a conta foi bloqueada automaticamente.',
+          };
+        }
+
+        return {
+          ok: true,
+          status: 200,
+          email: acc.email,
+          role: 'tester',
+          expiresAt: acc.expiresAt,
+          token: this.issueSessionToken(acc.email, 'tester', acc.id, acc.expiresAt),
+        };
+      }
+    }
+
+    if (!this.isConfigured() && matchingTestAccounts.length === 0) {
+      return {
+        ok: false,
+        status: 401,
+        error: 'Nenhuma conta configurada ainda neste terminal.',
+      };
+    }
+
+    return {
+      ok: false,
+      status: 401,
+      error: 'Email ou palavra-passe inválidos.',
+    };
+  }
+
+  public async authenticateAsync(rawEmail: unknown, rawPassword: unknown): Promise<{
+    ok: boolean;
+    status: number;
+    email?: string;
+    role?: UserRole;
+    expiresAt?: number | null;
+    token?: string;
+    error?: string;
+  }> {
+    const validation = validateAuthCredentialsInput(rawEmail, rawPassword);
+    if (!validation.valid) {
+      return {
+        ok: false,
+        status: 400,
+        error: validation.error,
+      };
+    }
+
+    const password = rawPassword as string;
+    const now = this.nowFn();
+
+    const envCreds = this.getEnvConfiguredCredentials();
+    if (envCreds) {
+      const emailMatches = envCreds.email
+        ? constantTimeStringMatch(validation.email, envCreds.email)
+        : true;
+      const passwordMatches = constantTimeStringMatch(password, envCreds.password);
+      if (emailMatches && passwordMatches) {
+        return {
+          ok: true,
+          status: 200,
+          email: validation.email,
+          role: 'admin',
+          expiresAt: null,
+          token: this.issueSessionToken(validation.email, 'admin'),
+        };
+      }
+    } else if (this.claimedAccount) {
+      const emailMatches = constantTimeStringMatch(validation.email, this.claimedAccount.email);
+      const passwordMatches = await verifyPasswordAgainstHashAsync(
+        password,
+        this.claimedAccount.salt,
+        this.claimedAccount.passwordHash
+      );
+      if (emailMatches && passwordMatches) {
+        return {
+          ok: true,
+          status: 200,
+          email: validation.email,
+          role: 'admin',
+          expiresAt: null,
+          token: this.issueSessionToken(validation.email, 'admin'),
+        };
+      }
+    }
+
+    const matchingTestAccounts = this.testAccounts.filter((acc) =>
+      constantTimeStringMatch(validation.email, acc.email)
+    );
+
+    if (matchingTestAccounts.length > 0) {
+      const sorted = [...matchingTestAccounts].sort((a, b) => b.createdAt - a.createdAt);
+      for (const acc of sorted) {
+        const passwordMatches = await verifyPasswordAgainstHashAsync(password, acc.salt, acc.passwordHash);
         if (!passwordMatches) continue;
 
         if (acc.revoked) {
@@ -509,6 +779,90 @@ export class AuthManager {
     };
   }
 
+  public async createTemporaryTestAccountAsync(rawEmail?: unknown, rawNote?: unknown): Promise<{
+    ok: boolean;
+    status: number;
+    credential?: {
+      id: string;
+      email: string;
+      password: string;
+      note: string;
+      createdAt: number;
+      expiresAt: number;
+    };
+    account?: PublicTestAccountInfo;
+    error?: string;
+  }> {
+    const now = this.nowFn();
+    let targetEmail = normalizeEmail(rawEmail);
+
+    if (!targetEmail) {
+      const randomTag = crypto.randomBytes(3).toString('hex');
+      targetEmail = `teste.${randomTag}@nextcandle.ai`;
+    } else if (!EMAIL_REGEX.test(targetEmail)) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'Introduz um endereço de email válido para o utilizador de teste.',
+      };
+    }
+
+    const adminEmail = this.getAdminEmail();
+    if (adminEmail && constantTimeStringMatch(targetEmail, adminEmail)) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'Não é possível gerar uma credencial temporária com o email do administrador.',
+      };
+    }
+
+    const hasActiveConflict = this.testAccounts.some(
+      (acc) => !acc.revoked && now < acc.expiresAt && constantTimeStringMatch(acc.email, targetEmail)
+    );
+    if (hasActiveConflict) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'Já existe uma credencial temporária ativa com este endereço de email.',
+      };
+    }
+
+    const note =
+      typeof rawNote === 'string' ? rawNote.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 80) : '';
+    const tempPassword = generateTemporaryPassword(12);
+    const { salt, hash } = await hashPasswordWithSaltAsync(tempPassword);
+    const id = `test_${crypto.randomBytes(6).toString('hex')}`;
+    const expiresAt = now + TEST_ACCOUNT_DURATION_MS;
+
+    const record: TemporaryTestAccountRecord = {
+      id,
+      email: targetEmail,
+      note,
+      salt,
+      passwordHash: hash,
+      createdAt: now,
+      expiresAt,
+      revoked: false,
+    };
+
+    this.testAccounts = [record, ...this.testAccounts].slice(0, 100);
+    await this.saveStoreToDiskAsync();
+
+    return {
+      ok: true,
+      status: 201,
+      credential: {
+        id,
+        email: targetEmail,
+        password: tempPassword,
+        note,
+        createdAt: now,
+        expiresAt,
+      },
+      account: this.toPublicTestAccount(record, now),
+    };
+  }
+
   private toPublicTestAccount(
     acc: TemporaryTestAccountRecord,
     now = this.nowFn()
@@ -540,7 +894,7 @@ export class AuthManager {
     if (!target) return false;
     target.revoked = true;
     target.revokedAt = this.nowFn();
-    this.saveStoreToDisk();
+    void this.saveStoreToDiskAsync();
     return true;
   }
 
@@ -548,7 +902,7 @@ export class AuthManager {
     const before = this.testAccounts.length;
     this.testAccounts = this.testAccounts.filter((acc) => acc.id !== id);
     if (this.testAccounts.length !== before) {
-      this.saveStoreToDisk();
+      void this.saveStoreToDiskAsync();
       return true;
     }
     return false;
@@ -620,7 +974,8 @@ export class AuthManager {
       if (now >= parsed.exp) {
         return { session: null, reason: 'expired' };
       }
-      if (this.revokedTokenIds.has(parsed.jti)) {
+      const revokedExp = this.revokedTokens.get(parsed.jti);
+      if (typeof revokedExp === 'number' && now < revokedExp) {
         return { session: null, reason: 'revoked' };
       }
 
@@ -650,11 +1005,14 @@ export class AuthManager {
   public revokeToken(token: string | null | undefined): void {
     const { session } = this.verifySessionToken(token);
     if (session) {
-      this.revokedTokenIds.add(session.jti);
-      if (this.revokedTokenIds.size > 500) {
-        const oldest = this.revokedTokenIds.values().next().value;
-        if (oldest) this.revokedTokenIds.delete(oldest);
+      const now = this.nowFn();
+      this.pruneExpiredRevocations(now);
+      this.revokedTokens.set(session.jti, session.exp);
+      if (this.revokedTokens.size > 2000) {
+        const oldest = this.revokedTokens.keys().next().value;
+        if (oldest) this.revokedTokens.delete(oldest);
       }
+      void this.saveStoreToDiskAsync();
     }
   }
 }

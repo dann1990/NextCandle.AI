@@ -4,6 +4,7 @@ import {
   DailyBankrollProtection,
 } from '../types/trading.js';
 import { detectMarketEnvironment } from './timingEngine.js';
+import { getTimeZoneParts, normalizeTimeZone } from './timezone.js';
 
 /**
  * Computes assertiveness ranking grouped by normalized Asset + Timeframe + Market Environment.
@@ -43,8 +44,18 @@ export function computeAssetTimeframeRanking(records: AnalysisResult[]): AssetTi
   });
 }
 
-function isSameLocalDay(tsA: number, dateB: Date): boolean {
+function isSameDayInTimeZone(tsA: number, dateB: Date, timeZone?: string): boolean {
   if (!Number.isFinite(tsA)) return false;
+  if (timeZone && timeZone.trim()) {
+    const tz = normalizeTimeZone(timeZone);
+    const partsA = getTimeZoneParts(new Date(tsA), tz);
+    const partsB = getTimeZoneParts(dateB, tz);
+    return (
+      partsA.year === partsB.year &&
+      partsA.month === partsB.month &&
+      partsA.day === partsB.day
+    );
+  }
   const d = new Date(tsA);
   return (
     d.getFullYear() === dateB.getFullYear() &&
@@ -55,13 +66,14 @@ function isSameLocalDay(tsA: number, dateB: Date): boolean {
 
 /**
  * Evaluates today's wins/losses, consecutive daily loss streak, Stop Diário trigger,
- * and fixed 1% - 2% bankroll stake sizing.
+ * and fixed 1% - 2% bankroll stake sizing in the active IANA timezone.
  */
 export function computeDailyBankrollProtection(
   records: AnalysisResult[],
   bankrollAmount: number,
   riskPercent: number,
-  now: Date = new Date()
+  now: Date = new Date(),
+  timeZone?: string
 ): DailyBankrollProtection {
   const safeBankroll = Number.isFinite(bankrollAmount) && bankrollAmount > 0 ? bankrollAmount : 1000;
   const clampedRisk = Math.min(2, Math.max(1, Number.isFinite(riskPercent) ? riskPercent : 1.5));
@@ -75,7 +87,7 @@ export function computeDailyBankrollProtection(
   const todayDecided: AnalysisResult[] = [];
 
   for (const r of records) {
-    if ((r.outcome === 'win' || r.outcome === 'loss') && isSameLocalDay(r.timestamp, now)) {
+    if ((r.outcome === 'win' || r.outcome === 'loss') && isSameDayInTimeZone(r.timestamp, now, timeZone)) {
       todayDecided.push(r);
       if (r.outcome === 'win') todayWins += 1;
       else todayLosses += 1;

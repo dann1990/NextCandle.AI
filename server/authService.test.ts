@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import {
   AuthManager,
   TEST_ACCOUNT_DURATION_MS,
+  constantTimeStringMatch,
   hashPasswordWithSalt,
+  parseCookieHeader,
   validateAuthCredentialsInput,
   verifyPasswordAgainstHash,
 } from './authService';
@@ -187,4 +192,50 @@ test('AuthManager handles accidental quotes and trailing whitespace in Render en
     else process.env.ADMIN_PASSWORD = prevPass;
   }
 });
+
+test('constantTimeStringMatch handles differing lengths securely and parseCookieHeader decodes cookies', () => {
+  assert.equal(constantTimeStringMatch('alpha', 'alpha'), true);
+  assert.equal(constantTimeStringMatch('alpha', 'alpha-longer'), false);
+  assert.equal(constantTimeStringMatch('', ''), true);
+
+  const parsed = parseCookieHeader('foo=bar; nc_session=abc.123%3D; empty=');
+  assert.equal(parsed.foo, 'bar');
+  assert.equal(parsed.nc_session, 'abc.123=');
+  assert.equal(parsed.empty, '');
+});
+
+test('AuthManager persists async scrypt credentials and revoked tokens across restarts', async () => {
+  const prevEmail = process.env.ADMIN_EMAIL;
+  const prevPass = process.env.ADMIN_PASSWORD;
+  delete process.env.ADMIN_EMAIL;
+  delete process.env.ADMIN_PASSWORD;
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nextcandle-auth-test-'));
+  const storePath = path.join(tempDir, 'auth-store.json');
+
+  try {
+    const fakeNow = 1_700_000_000_000;
+    const manager1 = new AuthManager({ storePath, nowFn: () => fakeNow });
+    const setupRes = await manager1.setupFirstAccessAsync('admin@nextcandle.ai', 'StrongPass#2026');
+    assert.equal(setupRes.ok, true);
+    assert.ok(setupRes.token);
+
+    const loginRes = await manager1.authenticateAsync('admin@nextcandle.ai', 'StrongPass#2026');
+    assert.equal(loginRes.ok, true);
+    assert.ok(loginRes.token);
+
+    manager1.revokeToken(loginRes.token);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const manager2 = new AuthManager({ storePath, nowFn: () => fakeNow });
+    assert.equal(manager2.getMode(), 'login');
+    assert.equal(manager2.verifySessionToken(loginRes.token).reason, 'revoked');
+    assert.equal(manager2.verifySessionToken(setupRes.token).session?.sub, 'admin@nextcandle.ai');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    if (prevEmail !== undefined) process.env.ADMIN_EMAIL = prevEmail;
+    if (prevPass !== undefined) process.env.ADMIN_PASSWORD = prevPass;
+  }
+});
+
 

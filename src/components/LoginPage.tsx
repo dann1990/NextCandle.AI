@@ -54,6 +54,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     try {
       const response = await fetch(resolveApiUrl(endpoint), {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: trimmedEmail,
@@ -74,6 +75,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         if (response.status === 409 && endpoint === '/api/auth/setup') {
           const loginRes = await fetch(resolveApiUrl('/api/auth/login'), {
             method: 'POST',
+            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: trimmedEmail, password }),
           });

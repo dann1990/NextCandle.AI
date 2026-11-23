@@ -2,6 +2,8 @@ import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { EconomicCalendarCheck, EconomicNewsEvent, MarketEnvironment } from '../src/types/trading.js';
 import { extractJsonObject } from '../src/utils/consensusEngine.js';
 import { evaluateEconomicNewsBlackout } from '../src/utils/riskGuardrails.js';
+import { withAbortTimeout } from './timeoutUtils.js';
+import { ECONOMIC_EVENTS_RESPONSE_SCHEMA } from './geminiSchemas.js';
 
 const CALENDAR_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const FOREX_FACTORY_FEED_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
@@ -17,20 +19,6 @@ let calendarFetchInFlight: Promise<{
   events: EconomicNewsEvent[];
   sources: Array<{ title: string; uri: string }>;
 }> | null = null;
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
 
 function formatUtcTime(timestampMs: number): string {
   const d = new Date(timestampMs);
@@ -110,15 +98,17 @@ Return strictly valid JSON (no markdown fences) in this format:
   ]
 }`;
 
-  const response: any = await withTimeout(
-    aiClient.models.generateContent({
-      model: 'gemini-4-hydrogen',
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-      },
-    }),
+  const response: any = await withAbortTimeout(
+    (abortSignal) =>
+      aiClient.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: prompt,
+        config: {
+          abortSignal,
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      }),
     9000,
     'Timeout na busca de calendário econômico'
   );
@@ -138,7 +128,26 @@ Return strictly valid JSON (no markdown fences) in this format:
 
   const events: EconomicNewsEvent[] = [];
   if (response?.text) {
-    const parsed = extractJsonObject(response.text);
+    let parsed: any;
+    try {
+      parsed = extractJsonObject(response.text);
+    } catch {
+      const formatted = await withAbortTimeout(
+        (abortSignal) =>
+          aiClient.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: `Extraia todos os eventos econômicos do texto abaixo para JSON estrito (${isoDate}):\n\n${response.text}`,
+            config: {
+              abortSignal,
+              responseMimeType: 'application/json',
+              responseSchema: ECONOMIC_EVENTS_RESPONSE_SCHEMA,
+            },
+          }),
+        7000,
+        'Timeout na formatação do calendário econômico'
+      );
+      parsed = extractJsonObject(formatted.text || '');
+    }
     const list = Array.isArray(parsed?.events) ? parsed.events : [];
     const nowMs = Date.now();
     for (const item of list) {

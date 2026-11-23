@@ -25,8 +25,8 @@ const REGION_ORDER = [
   'Global',
 ];
 
-export const TimezoneSelector: React.FC<TimezoneSelectorProps> = React.memo(
-  ({ value, onChange, variant = 'bar', disabled = false }) => {
+const LiveTimezoneClock: React.FC<{ timeZone: string; variant: 'bar' | 'compact' }> = React.memo(
+  ({ timeZone, variant }) => {
     const [now, setNow] = useState<Date>(() => new Date());
 
     useEffect(() => {
@@ -36,11 +36,41 @@ export const TimezoneSelector: React.FC<TimezoneSelectorProps> = React.memo(
       return () => clearInterval(id);
     }, []);
 
+    const liveClock = formatHHMMSSInTimeZone(now, timeZone);
+
+    if (variant === 'compact') {
+      return (
+        <span
+          data-testid="timezone-live-clock-compact"
+          className="text-[11px] font-mono text-slate-400 border-l border-slate-700 pl-2 tabular-nums hidden sm:inline"
+        >
+          {liveClock.slice(0, 5)}
+        </span>
+      );
+    }
+
+    return (
+      <div
+        data-testid="timezone-live-clock"
+        title={`Hora atual em ${timeZone}`}
+        className="px-2.5 h-9 rounded-lg bg-[#0b0f19] border border-slate-800 text-xs font-mono text-emerald-300 flex items-center gap-1.5 tabular-nums shrink-0"
+      >
+        <Clock className="w-3.5 h-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
+        <span>{liveClock}</span>
+      </div>
+    );
+  }
+);
+
+export const TimezoneSelector: React.FC<TimezoneSelectorProps> = React.memo(
+  ({ value, onChange, variant = 'bar', disabled = false }) => {
     const activeTz = normalizeTimeZone(value);
     const browserTz = useMemo(() => getBrowserTimeZone(), []);
-    const options = useMemo(() => buildTimezoneSelectOptions(activeTz, now), [activeTz, now]);
-    const liveClock = formatHHMMSSInTimeZone(now, activeTz);
-    const offsetLabel = formatUtcOffsetLabel(getTimeZoneOffsetMinutes(activeTz, now));
+    const options = useMemo(() => buildTimezoneSelectOptions(activeTz, new Date()), [activeTz]);
+    const offsetLabel = useMemo(
+      () => formatUtcOffsetLabel(getTimeZoneOffsetMinutes(activeTz, new Date())),
+      [activeTz]
+    );
 
     const groupedOptions = useMemo(() => {
       const map = new Map<string, typeof options>();
@@ -81,12 +111,7 @@ export const TimezoneSelector: React.FC<TimezoneSelectorProps> = React.memo(
               </optgroup>
             ))}
           </select>
-          <span
-            data-testid="timezone-live-clock-compact"
-            className="text-[11px] font-mono text-slate-400 border-l border-slate-700 pl-2 tabular-nums hidden sm:inline"
-          >
-            {liveClock.slice(0, 5)}
-          </span>
+          <LiveTimezoneClock timeZone={activeTz} variant="compact" />
         </div>
       );
     }
@@ -122,14 +147,7 @@ export const TimezoneSelector: React.FC<TimezoneSelectorProps> = React.memo(
         </div>
 
         <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 shrink-0 w-full lg:w-auto">
-          <div
-            data-testid="timezone-live-clock"
-            title={`Hora atual em ${activeTz}`}
-            className="px-2.5 h-9 rounded-lg bg-[#0b0f19] border border-slate-800 text-xs font-mono text-emerald-300 flex items-center gap-1.5 tabular-nums shrink-0"
-          >
-            <Clock className="w-3.5 h-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
-            <span>{liveClock}</span>
-          </div>
+          <LiveTimezoneClock timeZone={activeTz} variant="bar" />
 
           <select
             id="nc-timezone-select"

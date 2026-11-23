@@ -30,7 +30,9 @@ interface ChartUploadZoneProps {
   onChangeMarketEnvironment: (env: MarketEnvironment) => void;
   onImageSelected: (base64: string, filename?: string, autoTrigger?: boolean) => void;
   onClearImage: () => void;
+  onCancelAnalysis?: () => void;
   isAnalyzing: boolean;
+  isModalOpen?: boolean;
   soundEnabled?: boolean;
 }
 
@@ -52,7 +54,9 @@ export const ChartUploadZone: React.FC<ChartUploadZoneProps> = React.memo(({
   onChangeMarketEnvironment,
   onImageSelected,
   onClearImage,
+  onCancelAnalysis,
   isAnalyzing,
+  isModalOpen = false,
   soundEnabled = true,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
@@ -124,10 +128,10 @@ export const ChartUploadZone: React.FC<ChartUploadZoneProps> = React.memo(({
     [onImageSelected]
   );
 
-  // Global paste handler (Ctrl+V) - Auto-analyzes chart immediately
+  // Global paste handler (Ctrl+V) - Auto-analyzes chart immediately when no modal/camera/analysis blocks it
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
-      if (isAnalyzing) return;
+      if (isAnalyzing || isModalOpen || isCameraOpen) return;
       const items = e.clipboardData?.items;
       if (!items) return;
 
@@ -145,7 +149,7 @@ export const ChartUploadZone: React.FC<ChartUploadZoneProps> = React.memo(({
 
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [processSelectedFile, isAnalyzing]);
+  }, [processSelectedFile, isAnalyzing, isModalOpen, isCameraOpen]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isAnalyzing) {
@@ -411,6 +415,17 @@ export const ChartUploadZone: React.FC<ChartUploadZoneProps> = React.memo(({
                       <Volume2 className="w-3 h-3 text-emerald-400" />
                       <span>Notificações sonoras discretas ativas</span>
                     </div>
+                  )}
+                  {onCancelAnalysis && (
+                    <button
+                      type="button"
+                      data-testid="cancel-analysis-btn"
+                      onClick={onCancelAnalysis}
+                      className="mt-4 px-3.5 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-500/50 text-rose-200 text-xs font-mono font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Cancelar Análise</span>
+                    </button>
                   )}
                 </div>
               )}

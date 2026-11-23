@@ -27,6 +27,9 @@ export const ArchitectureModal: React.FC<ArchitectureModalProps> = ({
 
   return (
     <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
       className="fixed inset-0 z-50 overflow-y-auto bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"

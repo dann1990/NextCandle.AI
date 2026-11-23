@@ -177,4 +177,49 @@ test('buildDynamicCalibrationPromptSection filters directives strictly to explic
   assert.doesNotMatch(openPrompt, /Indicadores Prioritários Mercado OTC:/);
 });
 
+test('computeDailyBankrollProtection evaluates daily day boundary strictly in selected IANA timezone', () => {
+  // 2026-05-16 01:30 UTC is STILL May 15 (22:30) in America/Sao_Paulo (UTC-3),
+  // while already May 16 (10:30) in Asia/Tokyo (UTC+9).
+  const refInstant = new Date(Date.UTC(2026, 4, 16, 1, 30, 0));
+  const lossOnMay15SpMorning = makeRecord({
+    id: 'sp-may15',
+    timestamp: Date.UTC(2026, 4, 15, 15, 0, 0),
+    outcome: 'loss',
+  });
+  const lossOnMay16EarlyUtc = makeRecord({
+    id: 'utc-may16',
+    timestamp: Date.UTC(2026, 4, 16, 0, 30, 0),
+    outcome: 'loss',
+  });
+
+  // In Sao Paulo, both happened on May 15 -> 2 losses today
+  const spResult = computeDailyBankrollProtection(
+    [lossOnMay15SpMorning, lossOnMay16EarlyUtc],
+    1000,
+    1.5,
+    refInstant,
+    'America/Sao_Paulo'
+  );
+  assert.equal(spResult.todayLosses, 2);
+  assert.equal(spResult.protectionLevel, 'warning');
+
+  // In Tokyo, lossOnMay15SpMorning (May 16 00:00 JST) vs lossOnMay16EarlyUtc (May 16 09:30 JST)
+  // Pick a trade earlier on May 15 12:00 UTC (21:00 JST May 15 -> previous Tokyo day!)
+  const earlierMay15Jst = makeRecord({
+    id: 'tokyo-yesterday',
+    timestamp: Date.UTC(2026, 4, 15, 12, 0, 0),
+    outcome: 'loss',
+  });
+  const tokyoResult = computeDailyBankrollProtection(
+    [earlierMay15Jst, lossOnMay16EarlyUtc],
+    1000,
+    1.5,
+    refInstant,
+    'Asia/Tokyo'
+  );
+  assert.equal(tokyoResult.todayLosses, 1);
+  assert.equal(tokyoResult.protectionLevel, 'normal');
+});
+
+
 

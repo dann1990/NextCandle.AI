@@ -3,6 +3,8 @@ import path from 'path';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { AgentCalibrationProfile, AgentId } from '../src/types/trading.js';
 import { extractJsonObject } from '../src/utils/consensusEngine.js';
+import { withAbortTimeout } from './timeoutUtils.js';
+import { CALIBRATION_RESPONSE_SCHEMA } from './geminiSchemas.js';
 
 const CALIBRATION_FILE = process.env.DATA_DIR
   ? path.join(path.resolve(process.env.DATA_DIR), 'nextcandle-calibration.json')
@@ -50,19 +52,7 @@ export function sanitizePerformanceFeedback(raw: unknown): ClientPerformanceFeed
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
+
 
 const BASELINE_PROFILE: AgentCalibrationProfile = {
   version: 'v2.0-Híbrido',
@@ -141,16 +131,20 @@ function loadCalibrationFromDisk(): AgentCalibrationProfile {
   return { ...BASELINE_PROFILE, updatedAt: Date.now() };
 }
 
-function saveCalibrationToDisk(profile: AgentCalibrationProfile) {
-  try {
-    const dir = path.dirname(CALIBRATION_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(CALIBRATION_FILE, JSON.stringify(profile, null, 2), 'utf-8');
-  } catch {
-    // Ignore disk write errors on read-only environments
-  }
+let calibrationWriteQueue: Promise<void> = Promise.resolve();
+
+function saveCalibrationToDiskAsync(profile: AgentCalibrationProfile): Promise<void> {
+  const serialized = JSON.stringify(profile, null, 2);
+  calibrationWriteQueue = calibrationWriteQueue
+    .then(async () => {
+      const dir = path.dirname(CALIBRATION_FILE);
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(CALIBRATION_FILE, serialized, 'utf-8');
+    })
+    .catch(() => {
+      // Ignore disk write errors on read-only environments
+    });
+  return calibrationWriteQueue;
 }
 
 export function getCurrentCalibrationProfile(): AgentCalibrationProfile {
@@ -172,7 +166,8 @@ export function isCalibrationStale(profile: AgentCalibrationProfile): boolean {
 function buildTelemetryCalibrationProfile(
   current: AgentCalibrationProfile,
   feedback?: ClientPerformanceFeedback,
-  reasonNotice?: string
+  reasonNotice?: string,
+  persistGlobal = true
 ): AgentCalibrationProfile {
   const utcHour = new Date().getUTCHours();
   const isHighLiquidityWindow = utcHour >= 7 && utcHour <= 17;
@@ -232,9 +227,11 @@ function buildTelemetryCalibrationProfile(
     notice: reasonNotice,
   };
 
-  activeProfile = nextProfile;
-  if (!unchanged) {
-    saveCalibrationToDisk(nextProfile);
+  if (persistGlobal) {
+    activeProfile = nextProfile;
+    if (!unchanged) {
+      void saveCalibrationToDiskAsync(nextProfile);
+    }
   }
   return nextProfile;
 }
@@ -248,21 +245,28 @@ let lastAiRefreshAttemptAt = 0;
  */
 export async function refreshCalibrationWithAI(
   aiClient: GoogleGenAI | null,
-  rawFeedback?: ClientPerformanceFeedback
+  rawFeedback?: ClientPerformanceFeedback,
+  options: { persistGlobal?: boolean } = {}
 ): Promise<AgentCalibrationProfile> {
+  const persistGlobal = options.persistGlobal !== false;
   const feedback = sanitizePerformanceFeedback(rawFeedback);
   const current = getCurrentCalibrationProfile();
   if (!aiClient) {
     return buildTelemetryCalibrationProfile(
       current,
       feedback,
-      'Calibração automática aplicada via telemetria Win/Loss e janela de sessão.'
+      'Calibração automática aplicada via telemetria Win/Loss e janela de sessão.',
+      persistGlobal
     );
   }
 
   const now = Date.now();
-  if (now < quotaCooldownUntil || now - lastAiRefreshAttemptAt < AI_REFRESH_MIN_INTERVAL_MS) {
-    return buildTelemetryCalibrationProfile(current, feedback);
+  if (
+    !persistGlobal ||
+    now < quotaCooldownUntil ||
+    now - lastAiRefreshAttemptAt < AI_REFRESH_MIN_INTERVAL_MS
+  ) {
+    return buildTelemetryCalibrationProfile(current, feedback, undefined, persistGlobal);
   }
 
   if (refreshInFlight) {
@@ -328,15 +332,24 @@ Responda ESTRITAMENTE com um objeto JSON válido (sem blocos markdown) neste for
 }`;
 
       const tryModel = async (modelName: string, withSearch: boolean, timeoutMs: number) => {
-        return withTimeout(
-          aiClient.models.generateContent({
-            model: modelName,
-            contents: prompt,
-            config: {
-              ...(withSearch ? { tools: [{ googleSearch: {} }] } : { responseMimeType: 'application/json' }),
-              ...(modelName === 'gemini-4-hydrogen' ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
-            },
-          }),
+        return withAbortTimeout(
+          (abortSignal) =>
+            aiClient.models.generateContent({
+              model: modelName,
+              contents: prompt,
+              config: {
+                abortSignal,
+                ...(withSearch
+                  ? { tools: [{ googleSearch: {} }] }
+                  : {
+                      responseMimeType: 'application/json',
+                      responseSchema: CALIBRATION_RESPONSE_SCHEMA,
+                    }),
+                ...(modelName === 'gemini-4-hydrogen'
+                  ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                  : {}),
+              },
+            }),
           timeoutMs,
           'Timeout na atualização adaptativa'
         );
@@ -350,7 +363,7 @@ Responda ESTRITAMENTE com um objeto JSON válido (sem blocos markdown) neste for
       } catch (err1) {
         if (isRateLimitError(err1)) hitRateLimit = true;
         try {
-          // Fallback to fast Flash Lite model without search grounding (uses separate quota pool)
+          // Fallback to fast Flash Lite model with strict responseSchema (separate quota pool)
           response = await tryModel('gemini-3.1-flash-lite', false, 10000);
           hitRateLimit = false;
         } catch (err2) {
@@ -360,7 +373,27 @@ Responda ESTRITAMENTE com um objeto JSON válido (sem blocos markdown) neste for
 
       if (response?.text) {
         try {
-          const parsed = extractJsonObject(response.text);
+          let parsed: any;
+          try {
+            parsed = extractJsonObject(response.text);
+          } catch {
+            // Search grounding occasionally returns prose with citations; normalize into structured JSON
+            const formatted = await withAbortTimeout(
+              (abortSignal) =>
+                aiClient.models.generateContent({
+                  model: 'gemini-3.1-flash-lite',
+                  contents: `Converta o conteúdo abaixo para JSON estrito no schema solicitado:\n\n${response.text}`,
+                  config: {
+                    abortSignal,
+                    responseMimeType: 'application/json',
+                    responseSchema: CALIBRATION_RESPONSE_SCHEMA,
+                  },
+                }),
+              8000,
+              'Timeout na formatação estruturada da calibração'
+            );
+            parsed = extractJsonObject(formatted.text || '');
+          }
           const rawAgents = Array.isArray(parsed.agents) ? parsed.agents : [];
           const canonicalIds: AgentId[] = [
             'price_action',
@@ -429,7 +462,7 @@ Responda ESTRITAMENTE com um objeto JSON válido (sem blocos markdown) neste for
           };
 
           activeProfile = updated;
-          saveCalibrationToDisk(updated);
+          void saveCalibrationToDiskAsync(updated);
           return updated;
         } catch {
           // Malformed JSON falls through cleanly to telemetry calibration
@@ -441,14 +474,16 @@ Responda ESTRITAMENTE com um objeto JSON válido (sem blocos markdown) neste for
         return buildTelemetryCalibrationProfile(
           current,
           feedback,
-          'Cota da API Gemini momentaneamente atingida (429). Calibração aplicada automaticamente usando sua telemetria Win/Loss e regime de sessão.'
+          'Cota da API Gemini momentaneamente atingida (429). Calibração aplicada automaticamente usando sua telemetria Win/Loss e regime de sessão.',
+          persistGlobal
         );
       }
 
       return buildTelemetryCalibrationProfile(
         current,
         feedback,
-        'Calibração ajustada via telemetria Win/Loss e sessão de mercado.'
+        'Calibração ajustada via telemetria Win/Loss e sessão de mercado.',
+        persistGlobal
       );
     } finally {
       refreshInFlight = null;
